@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Reservas Club de Pádel</title>
+
+<style>
+body{font-family:Arial;margin:40px;background:#f4f4f4;color:#2c3e50}
+h1{margin-bottom:10px}
+.card{background:#fff;padding:20px;border-radius:10px;box-shadow:0 2px 6px rgba(0,0,0,.08);margin-bottom:20px}
+table{border-collapse:collapse;width:100%;background:white}
+th,td{border:1px solid #ddd;padding:10px}
+th{background:#2ecc71;color:white}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start}
+label{display:block;margin-top:10px;font-weight:bold}
+input,select{width:100%;padding:8px;margin-top:6px;border:1px solid #ccc;border-radius:6px}
+button{margin-top:14px;padding:10px 14px;border:0;border-radius:8px;background:#2ecc71;color:white;cursor:pointer}
+button.secondary{background:#34495e}
+.msg{margin-top:10px;padding:10px;border-radius:8px;display:none}
+.msg.ok{background:#e9f9ef;border:1px solid #bfeccb;color:#1d6b34}
+.msg.err{background:#fdecec;border:1px solid #f5bcbc;color:#8a1f1f}
+.small{color:#666;font-size:12px;margin-top:6px}
+
+/* Agenda */
+.slot-libre { background: #e9f9ef; }
+.slot-ocupado { background: #fdecec; }
+</style>
+
+</head>
+<body>
+
+<h1>Reservas Club de Pádel</h1>
+<p class="small">Selecciona una cancha y fecha, crea reservas y consulta el calendario del día.</p>
+
+<div class="grid">
+
+  <div class="card">
+    <h2>Canchas</h2>
+    <table>
+      <thead>
+        <tr><th>ID</th><th>Nombre</th><th>Activa</th></tr>
+      </thead>
+      <tbody id="tablaCanchas"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Crear reserva</h2>
+
+    <form id="formReserva">
+      <label>Cancha</label>
+      <select id="canchaId"></select>
+
+      <label>Jugador</label>
+      <input type="text" id="jugador" placeholder="Ej: Carlos">
+
+      <label>Fecha</label>
+      <input type="date" id="fecha">
+
+      <label>Hora inicio</label>
+      <input type="time" id="horaInicio">
+
+      <label>Duración</label>
+      <select id="duracion">
+        <option value="60">60 min</option>
+        <option value="90" selected>90 min</option>
+        <option value="120">120 min</option>
+      </select>
+
+      <label>Hora fin</label>
+      <input type="time" id="horaFin" readonly>
+
+      <button type="submit">Reservar</button>
+      <button type="button" class="secondary" id="btnVerReservas">Ver reservas del día</button>
+
+      <div id="msgOk" class="msg ok"></div>
+      <div id="msgErr" class="msg err"></div>
+    </form>
+  </div>
+
+</div>
+
+<div class="card">
+  <h2>Reservas (día seleccionado)</h2>
+  <table>
+    <thead>
+      <tr><th>Jugador</th><th>Inicio</th><th>Fin</th><th>Acciones</th></tr>
+    </thead>
+    <tbody id="tablaReservas"></tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Agenda por franjas (click en una franja libre para autollenar)</h2>
+  <table>
+    <thead>
+      <tr><th>Inicio</th><th>Fin</th><th>Estado</th></tr>
+    </thead>
+    <tbody id="tablaAgenda"></tbody>
+  </table>
+</div>
+
+<script>
+const $ = (id)=>document.getElementById(id);
+
+function showOk(text){
+  $("msgErr").style.display="none";
+  $("msgOk").textContent=text;
+  $("msgOk").style.display="block";
+}
+function showErr(text){
+  $("msgOk").style.display="none";
+  $("msgErr").textContent=text;
+  $("msgErr").style.display="block";
+}
+function limpiarMensajes(){
+  $("msgOk").style.display="none";
+  $("msgErr").style.display="none";
+}
+
+/** Calcula hora fin a partir de hora inicio + duración */
+function calcularHoraFin(){
+  const ini = $("horaInicio").value;
+  const dur = parseInt($("duracion").value, 10);
+
+  if(!ini || isNaN(dur)){
+    $("horaFin").value = "";
+    return;
+  }
+
+  const [h, m] = ini.split(":").map(Number);
+  const total = h * 60 + m + dur;
+
+  const hh = String(Math.floor(total / 60) % 24).padStart(2, "0");
+  const mm = String(total % 60).padStart(2, "0");
+
+  $("horaFin").value = `${hh}:${mm}`;
+}
+
+async function cargarCanchas(){
+  const res = await fetch("/api/canchas");
+  const canchas = await res.json();
+
+  const tbody = $("tablaCanchas");
+  tbody.innerHTML = "";
+  canchas.forEach(c=>{
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${c.id}</td><td>${c.nombre}</td><td>${c.activa}</td>`;
+    tbody.appendChild(tr);
+  });
+
+  const sel = $("canchaId");
+  sel.innerHTML = "";
+  canchas.forEach(c=>{
+    const opt = document.createElement("option");
+    opt.value = c.id;
+    opt.textContent = `${c.nombre} (id=${c.id})`;
+    sel.appendChild(opt);
+  });
+
+  if(!$("fecha").value){
+    const hoy = new Date().toISOString().slice(0,10);
+    $("fecha").value = hoy;
+  }
+}
+
+async function cargarReservas(){
+  limpiarMensajes();
+
+  const canchaId = $("canchaId").value;
+  const fecha = $("fecha").value;
+
+  if(!canchaId || !fecha){
+    showErr("Selecciona cancha y fecha para ver reservas.");
+    return;
+  }
+
+  const url = `/api/reservas?canchaId=${encodeURIComponent(canchaId)}&fecha=${encodeURIComponent(fecha)}`;
+  const res = await fetch(url);
+  const reservas = await res.json();
+
+  const tbody = $("tablaReservas");
+  tbody.innerHTML = "";
+
+  if(!Array.isArray(reservas) || reservas.length === 0){
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="4">No hay reservas para ese día.</td>`;
+    tbody.appendChild(tr);
+    return;
+  }
+
+  reservas.forEach(r=>{
+    const tr = document.createElement("tr");
+    const ini = (r.horaInicio || "").toString().slice(0,5);
+    const fin = (r.horaFin || "").toString().slice(0,5);
+
+    tr.innerHTML = `
+      <td>${r.jugador}</td>
+      <td>${ini}</td>
+      <td>${fin}</td>
+      <td><button type="button" class="secondary">Cancelar</button></td>
+    `;
+    tbody.appendChild(tr);
+
+    tr.querySelector("button").addEventListener("click", async () => {
+      if(!confirm("¿Cancelar esta reserva?")) return;
+
+      const resDel = await fetch(`/api/reservas/${r.id}`, { method: "DELETE" });
+
+      if(!resDel.ok){
+        const text = await resDel.text();
+        let msg = "No se pudo cancelar la reserva.";
+        try { msg = JSON.parse(text).message || msg; } catch {}
+        showErr(msg);
+        return;
+      }
+
+      showOk("Reserva cancelada.");
+      await cargarReservas();
+      await cargarAgenda();
+    });
+  });
+}
+
+async function cargarAgenda(){
+  const canchaId = $("canchaId").value;
+  const fecha = $("fecha").value;
+
+  if(!canchaId || !fecha) return;
+
+  // Usamos la duración como tamaño del slot para que cuadre con lo que quieres reservar
+  const slotMinutos = parseInt($("duracion").value, 10) || 90;
+  const url = `/api/agenda?canchaId=${encodeURIComponent(canchaId)}&fecha=${encodeURIComponent(fecha)}&slotMinutos=${encodeURIComponent(slotMinutos)}`;
+
+  const res = await fetch(url);
+  const slots = await res.json();
+
+  const tbody = $("tablaAgenda");
+  tbody.innerHTML = "";
+
+  if(!Array.isArray(slots) || slots.length === 0){
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="3">No hay franjas (revisa horario/después de/hasta).</td>`;
+    tbody.appendChild(tr);
+    return;
+  }
+
+  slots.forEach(s=>{
+    const tr = document.createElement("tr");
+    const ini = (s.inicio || "").toString().slice(0,5);
+    const fin = (s.fin || "").toString().slice(0,5);
+
+    if(s.ocupado){
+      tr.className = "slot-ocupado";
+      tr.innerHTML = `<td>${ini}</td><td>${fin}</td><td>OCUPADO (${s.jugador || ""})</td>`;
+    } else {
+      tr.className = "slot-libre";
+      tr.innerHTML = `<td>${ini}</td><td>${fin}</td><td>LIBRE</td>`;
+      tr.style.cursor = "pointer";
+
+      // Click → rellena el formulario
+      tr.addEventListener("click", ()=>{
+        $("horaInicio").value = ini;
+        $("duracion").value = String(slotMinutos);
+        calcularHoraFin();
+        showOk(`Franja seleccionada: ${ini} - ${fin}. Escribe jugador y reserva.`);
+      });
+    }
+
+    tbody.appendChild(tr);
+  });
+}
+
+$("btnVerReservas").addEventListener("click", async () => {
+  await cargarReservas();
+  await cargarAgenda();
+});
+
+$("horaInicio").addEventListener("change", calcularHoraFin);
+$("duracion").addEventListener("change", async () => {
+  calcularHoraFin();
+  await cargarAgenda();
+});
+
+$("formReserva").addEventListener("submit", async (e)=>{
+  e.preventDefault();
+  limpiarMensajes();
+
+  calcularHoraFin();
+
+  const data = {
+    canchaId: parseInt($("canchaId").value, 10),
+    jugador: $("jugador").value,
+    fecha: $("fecha").value,
+    horaInicio: $("horaInicio").value,
+    horaFin: $("horaFin").value
+  };
+
+  try{
+    const res = await fetch("/api/reservas", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify(data)
+    });
+
+    const body = await res.json().catch(()=> ({}));
+
+    if(!res.ok){
+      showErr(body.message || "Error al crear la reserva");
+      return;
+    }
+
+    showOk(`Reserva creada (id=${body.id}).`);
+    $("jugador").value = "";
+    await cargarReservas();
+    await cargarAgenda();
+
+  }catch(err){
+    showErr("No se pudo conectar con el servidor.");
+  }
+});
+
+// INIT
+(async function init(){
+  await cargarCanchas();
+  calcularHoraFin();
+  await cargarReservas();
+  await cargarAgenda();
+})();
+</script>
+
+</body>
+</html>
